@@ -22,7 +22,7 @@ Niche Chrome extension (Manifest V3) for your own use. No Web Store, no OAuth, n
 
 1. `chrome://extensions` → Developer mode → Load unpacked → select this folder.
 2. Open `https://www.youtube.com/playlist?list=WL` (logged in).
-3. Toolbar appears above the playlist. `Scan subs` once (or `Import list`), then `Subs-only`.
+3. Toolbar appears in the left sidebar, under the Play all / Shuffle buttons. `Scan subs` once (or `Import list`), then `Subs-only`.
 
 ## Files
 

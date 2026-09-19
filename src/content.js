@@ -356,23 +356,62 @@
 
   /* ---------- toolbar (Shadow DOM) ---------- */
 
-  function ensureToolbar() {
-    const existing = $('#' + P + 'host');
-    if (existing && existing.shadowRoot) return bindToolbarApi(existing.shadowRoot);    const host = document.createElement('div');
-    host.id = P + 'host';
-    host.setAttribute('data-' + P + 'scope', 'toolbar');
+  /** Preferred insert point: left sidebar, right under Play all / Shuffle.
+   *  Keeps the toolbar out of the video-list column so the list layout is untouched. */
+  function findSidebarInsertPoint() {
+    const sidebar = document.querySelector('ytd-playlist-sidebar-renderer');
+    if (!sidebar) return null;
+    const btns = Array.from(sidebar.querySelectorAll('button, a'));
+    const playAll = btns.find((el) => (el.textContent || '').trim().toLowerCase() === 'play all');
+    if (playAll) {
+      let node = playAll;
+      while (node && node !== sidebar) {
+        const text = (node.textContent || '').toLowerCase();
+        if (text.includes('play all') && text.includes('shuffle') && node.parentElement) {
+          return { parent: node.parentElement, after: node };
+        }
+        node = node.parentElement;
+      }
+    }
+    return { parent: sidebar, after: sidebar.lastElementChild };
+  }
+
+  function placeHost(host) {
+    const spot = findSidebarInsertPoint();
+    if (spot && spot.parent) {
+      const ref = spot.after ? spot.after.nextSibling : null;
+      if (host.parentElement !== spot.parent || host.nextSibling !== ref) {
+        spot.parent.insertBefore(host, ref);
+        log('toolbar placed in sidebar');
+      }
+      return;
+    }
+    // Fallbacks (old behavior): above the list, then body.
     const anchor =
       $('ytd-browse[page-subtype="playlist"] #primary') ||
       $('ytd-browse #primary') ||
       $('#primary') ||
       $('ytd-playlist-video-list-renderer') ||
       document.body;
-    (anchor.parentElement || document.body).insertBefore(host, anchor);
+    const parent = anchor.parentElement || document.body;
+    if (host.parentElement !== parent) parent.insertBefore(host, anchor === document.body ? null : anchor);
+  }
+
+  function ensureToolbar() {
+    const existing = $('#' + P + 'host');
+    if (existing && existing.shadowRoot) {
+      placeHost(existing); // migrate to sidebar on upgrade / re-position if layout changed
+      return bindToolbarApi(existing.shadowRoot);
+    }
+    const host = document.createElement('div');
+    host.id = P + 'host';
+    host.setAttribute('data-' + P + 'scope', 'toolbar');
+    placeHost(host);
     const shadow = host.attachShadow({ mode: 'open' });
 
     shadow.innerHTML = `
       <style>
-        .${P}bar{font:13px/1.45 system-ui,Roboto,Arial,sans-serif;color:#0f0f0f;background:#fff;
+        .${P}bar{font:13px/1.45 system-ui,Roboto,Arial,sans-serif;color:#0f0f0f;background:#fff;box-sizing:border-box;max-width:100%;
           border:1px solid #e5e5e5;border-radius:12px;padding:10px 12px;margin:12px 0;box-shadow:0 1px 2px rgba(0,0,0,.06)}
         .${P}row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
         .${P}title{font-weight:700;margin-right:4px}
