@@ -15,6 +15,11 @@
 
   const P = 'wlavf-';
   const MSG_OPEN = 'WLAVF_OPEN_CLEAN';
+  const LOG = '[wlavf]';
+
+  function log(...args) {
+    try { console.log(LOG, ...args); } catch (_e) { /* ignore */ }
+  }
   const LS_KEYS = { subsOnly: P + 'subsOnly', cleanOpen: P + 'cleanOpen', deepCollab: P + 'deepCollab' };
   const STORE_SUBS = P + 'subs';       // { map, updatedAt }
   const STORE_COLLAB = P + 'collabs';  // { videoId: {authors, at} } — secondary, on-demand only
@@ -353,8 +358,7 @@
 
   function ensureToolbar() {
     const existing = $('#' + P + 'host');
-    if (existing && existing.shadowRoot) return bindToolbarApi(existing.shadowRoot);
-    const host = document.createElement('div');
+    if (existing && existing.shadowRoot) return bindToolbarApi(existing.shadowRoot);    const host = document.createElement('div');
     host.id = P + 'host';
     host.setAttribute('data-' + P + 'scope', 'toolbar');
     const anchor =
@@ -392,7 +396,7 @@
           <span class="${P}title">WL Adv Filter</span>
           <span class="${P}badge">private · no API key</span>
           <label class="${P}chk"><input type="checkbox" id="${P}subsOnly"> Subs-only</label>
-          <label class="${P}chk"><input type="checkbox" id="${P}cleanOpen" checked> Open clean in new window</label>
+          <label class="${P}chk"><input type="checkbox" id="${P}cleanOpen" checked> Open clean in new tab</label>
           <label class="${P}chk"><input type="checkbox" id="${P}deepCollab"> Collab check (slow)</label>
           <button class="${P}btn ${P}btn-primary" id="${P}shuffle">Shuffle</button>
           <button class="${P}btn" id="${P}loadAll">Load all</button>
@@ -453,7 +457,7 @@
       await saveToggles();
       applySubsFilter(ui);
     });
-    q('cleanOpen').addEventListener('change', async (e) => { state.cleanOpen = e.target.checked; await saveToggles(); ui.status(state.cleanOpen ? 'Clean-open ON: WL clicks open plain watch URLs in a new window (kept in WL).' : 'Clean-open OFF: YouTube default click behavior.'); });
+    q('cleanOpen').addEventListener('change', async (e) => { state.cleanOpen = e.target.checked; await saveToggles(); ui.status(state.cleanOpen ? 'Clean-open ON: WL clicks open plain watch URLs in a new tab (kept in WL).' : 'Clean-open OFF: YouTube default click behavior.'); });
     q('deepCollab').addEventListener('change', async (e) => { state.deepCollab = e.target.checked; await saveToggles(); applySubsFilter(ui); });
 
     on('shuffle', () => shuffleRows(ui));
@@ -513,6 +517,7 @@
     ui.counts();
     if (!subsCount()) ui.status('Ready. Step 1: “Scan subs” (one-time read of /feed/channels) or “Import list”. Step 2: toggle “Subs-only”.');
     else if (state.subsOnly) applySubsFilter(ui);
+    log('toolbar injected, rows found:', getVideoRows().length);
     return ui;
   }
 
@@ -536,7 +541,7 @@
     };
   }
 
-  /* ---------- click intercept: clean URL in NEW WINDOW, keep in WL ---------- */
+  /* ---------- click intercept: clean URL in NEW TAB (same window), keep in WL ---------- */
 
   function onDocClickCapture(e) {
     if (!state.cleanOpen || !isWlPage()) return;
@@ -573,20 +578,26 @@
   async function boot() {
     if (booted) return;
     booted = true;
+    log('boot on', location.href);
     document.addEventListener('click', onDocClickCapture, true);
     await loadPersisted();
     if (isWlPage()) { state.active = true; ensureToolbar(); }
+    else log('not a WL page, idle');
     window.addEventListener('yt-navigate-finish', debounce(() => {
       if (isWlPage()) ensureToolbar();
       else { const h = $('#' + P + 'host'); if (h) h.remove(); if (state.rowObserver) state.rowObserver.disconnect(); }
     }, 400));
+    // Self-heal: re-inject if on WL but the host is missing (slow render, DOM wipe).
     setInterval(() => {
       if (location.href !== state.lastUrl) {
         state.lastUrl = location.href;
         if (isWlPage()) ensureToolbar();
         else { const h = $('#' + P + 'host'); if (h) h.remove(); }
+      } else if (isWlPage() && !$('#' + P + 'host')) {
+        log('host missing, re-injecting');
+        ensureToolbar();
       }
-    }, 1000);
+    }, 1500);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot, { once: true });

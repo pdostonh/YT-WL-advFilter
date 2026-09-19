@@ -116,7 +116,7 @@ ok(ex.filter((e) => e.url.includes('/feed/')).length, 0, 'feed links skipped');
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
 ok(manifest.manifest_version, 3, 'mv3');
 assert.ok((manifest.permissions || []).includes('storage'), 'storage permission');
-assert.ok((manifest.permissions || []).includes('windows'), 'windows permission');
+assert.ok(!(manifest.permissions || []).includes('windows'), 'no windows permission (tabs need none)');
 const cs = (manifest.content_scripts || [])[0];
 assert.ok(cs, 'content script declared');
 assert.deepStrictEqual(cs.js, ['src/wlavf-lib.js', 'src/content.js'], 'lib loads before content');
@@ -130,6 +130,7 @@ assert.ok(contentSrc.includes('__WLAVF_LIB'), 'content uses shared lib');
 assert.ok(!contentSrc.includes('function channelKey('), 'no duplicated channelKey in content');
 const bgSrc = fs.readFileSync(bgPath, 'utf8');
 assert.ok(bgSrc.includes('WLAVF_OPEN_CLEAN'), 'background handles clean-open message');
-assert.ok(bgSrc.includes('chrome.windows') && bgSrc.includes('.create'), 'background opens separate window');
+assert.ok(bgSrc.includes('chrome.tabs') && bgSrc.includes('.create'), 'background opens new tab');
+assert.ok(!bgSrc.includes('chrome.windows'), 'background does not open windows');
 
 console.log(`wlavf tests passed: ${n} assertions + structural checks`);

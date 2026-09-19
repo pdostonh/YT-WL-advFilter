@@ -1,5 +1,5 @@
 /* WL Adv Filter (private) — background service worker (MV3).
- * Single job: open a clean watch URL in a brand-new separate Chrome window.
+ * Single job: open a clean watch URL in a NEW TAB of the same window.
  * No playlist mutation, no API keys, no tracking.
  */
 'use strict';
@@ -22,9 +22,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     sendResponse({ ok: false, error: 'bad-url' });
     return true;
   }
-  // User asked for a NEW SEPARATE WINDOW (not just a tab).
-  chrome.windows
-    .create({ url, focused: true, type: 'normal' })
+  // User asked for a NEW TAB in the same window (foreground).
+  // Host permissions (*.youtube.com) cover opening YouTube URLs; no "tabs" permission needed.
+  chrome.tabs
+    .create({ url, active: true })
     .then(() => sendResponse({ ok: true }))
     .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
   return true; // async response

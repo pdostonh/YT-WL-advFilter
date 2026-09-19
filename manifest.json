@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Watch Later Adv Filter (private)",
-  "version": "1.1.0",
-  "description": "Private niche helper for Watch Later: subs-only filter, random shuffle, open-clean-in-new-window. No API keys. Content-script only on WL page.",
-  "permissions": ["storage", "windows"],
+  "version": "1.2.0",
+  "description": "Private niche helper for Watch Later: subs-only filter, random shuffle, open-clean-in-new-tab. No API keys. Content-script only on WL page.",
+  "permissions": ["storage"],
   "host_permissions": ["*://*.youtube.com/*"],
   "minimum_chrome_version": "116",
   "background": {
