@@ -366,41 +366,65 @@
     } catch (_e) { return false; }
   }
 
-  function findSidebarInsertPoint() {
-    // YouTube SPA can leave stale hidden renderers around — prefer a visible one.
-    const sidebars = Array.from(document.querySelectorAll('ytd-playlist-sidebar-renderer'));
-    const sidebar = sidebars.find(isVisible) || sidebars[0];
-    if (!sidebar) { log('no sidebar renderer found, using fallback'); return null; }
-    if (!isVisible(sidebar)) log('sidebar renderer hidden, placing anyway');
-    const btns = Array.from(sidebar.querySelectorAll('button, a'));
-    const playAll = btns.find((el) => (el.textContent || '').trim().toLowerCase() === 'play all');
-    if (playAll) {
-      let node = playAll;
-      while (node && node !== sidebar) {
+  /** Preferred insert point: right under the VISIBLE Play all / Shuffle row,
+   *  wherever YouTube renders it (sidebar or header card). Visibility is checked
+   *  because the page can contain hidden/stale duplicate renderers. */
+  function findPlayAllRow() {
+    const els = Array.from(document.querySelectorAll('button, a'));
+    for (const el of els) {
+      if (!isVisible(el)) continue;
+      if ((el.textContent || '').trim().toLowerCase() !== 'play all') continue;
+      let node = el;
+      for (let depth = 0; depth < 10 && node && node !== document.body; depth++) {
         const text = (node.textContent || '').toLowerCase();
-        if (text.includes('play all') && text.includes('shuffle') && node.parentElement) {
-          return { parent: node.parentElement, after: node };
+        if (text.includes('play all') && text.includes('shuffle') && node.parentElement && isVisible(node.parentElement)) {
+          return { parent: node.parentElement, after: node, how: 'play-all row' };
         }
         node = node.parentElement;
       }
     }
-    log('Play-all row not found, appending to sidebar end');
-    return { parent: sidebar, after: sidebar.lastElementChild };
+    return null;
+  }
+
+  function findSidebarInsertPoint() {
+    // Visible header/sidebar card (new and old layouts). Hidden duplicates ignored.
+    const sels = ['ytd-playlist-header-renderer', 'ytd-playlist-sidebar-renderer'];
+    for (const sel of sels) {
+      const nodes = Array.from(document.querySelectorAll(sel));
+      const vis = nodes.find(isVisible);
+      if (vis) return { parent: vis, after: vis.lastElementChild, how: sel };
+    }
+    if (sels.some((sel) => document.querySelector(sel))) log('header/sidebar renderers hidden, using fallback');
+    else log('no header/sidebar renderer found, using fallback');
+    return null;
+  }
+
+  /** Returns true when the host was actually moved. */
+  function moveHost(host, parent, ref) {
+    if (!parent || !parent.isConnected) return false;
+    if (host.parentElement === parent && host.nextSibling === (ref || null)) return false;
+    parent.insertBefore(host, ref || null);
+    return true;
   }
 
   function placeHost(host) {
     try {
-      const spot = findSidebarInsertPoint();
-      if (spot && spot.parent && spot.parent.isConnected) {
-        const ref = spot.after ? spot.after.nextSibling : null;
-        if (host.parentElement !== spot.parent || host.nextSibling !== ref) {
-          spot.parent.insertBefore(host, ref);
-        }
-        log('toolbar placed in sidebar');
+      const row = findPlayAllRow();
+      if (row && moveHost(host, row.parent, row.after ? row.after.nextSibling : null)) {
+        log('toolbar placed under Play all / Shuffle');
         return;
-      }
+      } else if (row) return; // already in place
     } catch (err) {
-      log('sidebar placement failed, using fallback:', err && err.message);
+      log('play-all placement failed:', err && err.message);
+    }
+    try {
+      const spot = findSidebarInsertPoint();
+      if (spot && moveHost(host, spot.parent, spot.after ? spot.after.nextSibling : null)) {
+        log('toolbar placed in header card (' + spot.how + ')');
+        return;
+      } else if (spot) return; // already in place
+    } catch (err) {
+      log('header placement failed, using fallback:', err && err.message);
     }
     try {
       // Fallbacks (old behavior): above the list, then body.
@@ -411,8 +435,7 @@
         $('ytd-playlist-video-list-renderer') ||
         document.body;
       const parent = anchor.parentElement || document.body;
-      if (host.parentElement !== parent) parent.insertBefore(host, anchor === document.body ? null : anchor);
-      log('toolbar placed at fallback');
+      if (moveHost(host, parent, anchor === document.body ? null : anchor)) log('toolbar placed at fallback');
     } catch (err2) {
       log('fallback placement failed:', err2 && err2.message);
       try { document.body.appendChild(host); } catch (_e) { /* ignore */ }
@@ -653,15 +676,19 @@
       if (isWlPage()) ensureToolbar();
       else { const h = $('#' + P + 'host'); if (h) h.remove(); if (state.rowObserver) state.rowObserver.disconnect(); }
     }, 400));
-    // Self-heal: re-inject if on WL but the host is missing (slow render, DOM wipe).
+    // Self-heal: re-place if on WL but the host is missing OR hidden
+    // (e.g. stuck inside a stale invisible renderer).
     setInterval(() => {
       if (location.href !== state.lastUrl) {
         state.lastUrl = location.href;
         if (isWlPage()) ensureToolbar();
         else { const h = $('#' + P + 'host'); if (h) h.remove(); }
-      } else if (isWlPage() && !$('#' + P + 'host')) {
-        log('host missing, re-injecting');
-        ensureToolbar();
+      } else if (isWlPage()) {
+        const h = $('#' + P + 'host');
+        if (!h || !isVisible(h)) {
+          log('host missing or hidden, re-placing');
+          ensureToolbar();
+        }
       }
     }, 1500);
   }
