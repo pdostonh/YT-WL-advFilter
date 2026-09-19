@@ -358,9 +358,20 @@
 
   /** Preferred insert point: left sidebar, right under Play all / Shuffle.
    *  Keeps the toolbar out of the video-list column so the list layout is untouched. */
+  function isVisible(el) {
+    try {
+      if (!el || !el.isConnected) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    } catch (_e) { return false; }
+  }
+
   function findSidebarInsertPoint() {
-    const sidebar = document.querySelector('ytd-playlist-sidebar-renderer');
-    if (!sidebar) return null;
+    // YouTube SPA can leave stale hidden renderers around — prefer a visible one.
+    const sidebars = Array.from(document.querySelectorAll('ytd-playlist-sidebar-renderer'));
+    const sidebar = sidebars.find(isVisible) || sidebars[0];
+    if (!sidebar) { log('no sidebar renderer found, using fallback'); return null; }
+    if (!isVisible(sidebar)) log('sidebar renderer hidden, placing anyway');
     const btns = Array.from(sidebar.querySelectorAll('button, a'));
     const playAll = btns.find((el) => (el.textContent || '').trim().toLowerCase() === 'play all');
     if (playAll) {
@@ -373,40 +384,52 @@
         node = node.parentElement;
       }
     }
+    log('Play-all row not found, appending to sidebar end');
     return { parent: sidebar, after: sidebar.lastElementChild };
   }
 
   function placeHost(host) {
-    const spot = findSidebarInsertPoint();
-    if (spot && spot.parent) {
-      const ref = spot.after ? spot.after.nextSibling : null;
-      if (host.parentElement !== spot.parent || host.nextSibling !== ref) {
-        spot.parent.insertBefore(host, ref);
+    try {
+      const spot = findSidebarInsertPoint();
+      if (spot && spot.parent && spot.parent.isConnected) {
+        const ref = spot.after ? spot.after.nextSibling : null;
+        if (host.parentElement !== spot.parent || host.nextSibling !== ref) {
+          spot.parent.insertBefore(host, ref);
+        }
         log('toolbar placed in sidebar');
+        return;
       }
-      return;
+    } catch (err) {
+      log('sidebar placement failed, using fallback:', err && err.message);
     }
-    // Fallbacks (old behavior): above the list, then body.
-    const anchor =
-      $('ytd-browse[page-subtype="playlist"] #primary') ||
-      $('ytd-browse #primary') ||
-      $('#primary') ||
-      $('ytd-playlist-video-list-renderer') ||
-      document.body;
-    const parent = anchor.parentElement || document.body;
-    if (host.parentElement !== parent) parent.insertBefore(host, anchor === document.body ? null : anchor);
+    try {
+      // Fallbacks (old behavior): above the list, then body.
+      const anchor =
+        $('ytd-browse[page-subtype="playlist"] #primary') ||
+        $('ytd-browse #primary') ||
+        $('#primary') ||
+        $('ytd-playlist-video-list-renderer') ||
+        document.body;
+      const parent = anchor.parentElement || document.body;
+      if (host.parentElement !== parent) parent.insertBefore(host, anchor === document.body ? null : anchor);
+      log('toolbar placed at fallback');
+    } catch (err2) {
+      log('fallback placement failed:', err2 && err2.message);
+      try { document.body.appendChild(host); } catch (_e) { /* ignore */ }
+    }
   }
 
   function ensureToolbar() {
-    const existing = $('#' + P + 'host');
-    if (existing && existing.shadowRoot) {
-      placeHost(existing); // migrate to sidebar on upgrade / re-position if layout changed
-      return bindToolbarApi(existing.shadowRoot);
-    }
-    const host = document.createElement('div');
-    host.id = P + 'host';
-    host.setAttribute('data-' + P + 'scope', 'toolbar');
-    placeHost(host);
+    try {
+      const existing = $('#' + P + 'host');
+      if (existing && existing.shadowRoot) {
+        placeHost(existing); // migrate to sidebar on upgrade / re-position if layout changed
+        return bindToolbarApi(existing.shadowRoot);
+      }
+      const host = document.createElement('div');
+      host.id = P + 'host';
+      host.setAttribute('data-' + P + 'scope', 'toolbar');
+      placeHost(host);
     const shadow = host.attachShadow({ mode: 'open' });
 
     shadow.innerHTML = `
@@ -558,6 +581,10 @@
     else if (state.subsOnly) applySubsFilter(ui);
     log('toolbar injected, rows found:', getVideoRows().length);
     return ui;
+    } catch (err) {
+      log('toolbar build failed:', err && err.stack || err);
+      return bindToolbarApi(document);
+    }
   }
 
   function bindToolbarApi(shadow) {

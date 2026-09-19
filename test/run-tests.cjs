@@ -128,6 +128,7 @@ cs.js.forEach((f) => assert.ok(fs.existsSync(path.join(ROOT, f)), `content file 
 const contentSrc = fs.readFileSync(path.join(ROOT, 'src', 'content.js'), 'utf8');
 assert.ok(contentSrc.includes('__WLAVF_LIB'), 'content uses shared lib');
 assert.ok(contentSrc.includes('ytd-playlist-sidebar-renderer'), 'toolbar prefers sidebar placement');
+assert.ok(contentSrc.includes('toolbar build failed'), 'toolbar build errors are logged, not silent');
 assert.ok(!contentSrc.includes('function channelKey('), 'no duplicated channelKey in content');
 const bgSrc = fs.readFileSync(bgPath, 'utf8');
 assert.ok(bgSrc.includes('WLAVF_OPEN_CLEAN'), 'background handles clean-open message');
