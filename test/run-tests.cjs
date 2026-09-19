@@ -112,6 +112,54 @@ ok(!!exMap['id:' + UC_A], true, 'anchor channel id extracted');
 ok(!!exMap['id:' + UC_B], true, 'ytInitialData channel id extracted');
 ok(ex.filter((e) => e.url.includes('/feed/')).length, 0, 'feed links skipped');
 
+// --- v2: InnerTube config + playlist data ---
+const UC_C = 'UC' + 'C'.repeat(22);
+const UC_D = 'UC' + 'D'.repeat(22);
+const cfgHtml =
+  '<html><head><script>ytcfg.set({"INNERTUBE_API_KEY":"AIzaTESTKEY123",' +
+  '"INNERTUBE_CONTEXT":{"client":{"clientName":"WEB","clientVersion":"2.20260101.00.00",' +
+  '"note":"brace } in string \\"quoted\\" ok"},"user":{"locked":false}}});</script></head></html>';
+const cfg = lib.parseInnertubeConfig(cfgHtml);
+ok(cfg.apiKey, 'AIzaTESTKEY123', 'api key extracted');
+ok(cfg.clientVersion, '2.20260101.00.00', 'client version from context');
+ok(cfg.context && cfg.context.client.clientName, 'WEB', 'context parsed through nested braces/escapes');
+const cfg2 = lib.parseInnertubeConfig('<html></html>');
+ok(cfg2.apiKey, null, 'missing key is null');
+ok(cfg2.context, null, 'missing context is null');
+
+const page1 = {
+  contents: { twoColumnBrowseResultsRenderer: { tabs: [{ tabRenderer: { content: { sectionListRenderer: { contents: [{ itemSectionRenderer: { contents: [{ playlistVideoListRenderer: {
+    contents: [
+      { playlistVideoRenderer: { videoId: 'VID111AAAAA', title: { runs: [{ text: 'First' }] }, shortBylineText: { runs: [{ text: 'Chan One', navigationEndpoint: { browseEndpoint: { browseId: UC_C, canonicalBaseUrl: '/@chanone' } } }] } } },
+      { playlistVideoRenderer: { videoId: 'VID222BBBBB', title: { simpleText: 'Second' }, shortBylineText: { runs: [{ text: 'Chan Two', navigationEndpoint: { browseEndpoint: { browseId: UC_D } } }] } } },
+      { playlistVideoRenderer: { videoId: 'VID333CCCCC' } },
+      { continuationItemRenderer: { continuationEndpoint: { continuationCommand: { token: 'TOKEN_PAGE2' } } } },
+    ],
+    continuations: [{ nextContinuationData: { continuation: 'TOKEN_PAGE2' } }],
+  } }] } }] } } } }] } },
+};
+const r1 = lib.collectPlaylistData(page1);
+ok(r1.items.length, 3, 'initial page items collected');
+ok(r1.items[0].channelId, UC_C, 'channel id from browseId');
+ok(r1.items[0].channelHandle, '@chanone', 'handle from canonicalBaseUrl');
+ok(r1.items[0].title, 'First', 'runs title');
+ok(r1.items[1].title, 'Second', 'simpleText title');
+ok(r1.items[2].channelName, '', 'deleted/unknown item has no channel (fail-open later)');
+ok(r1.continuation, 'TOKEN_PAGE2', 'continuation token found');
+
+const page2 = {
+  onResponseReceivedActions: [{ appendContinuationItemsAction: { continuationItems: [
+    { playlistVideoRenderer: { videoId: 'VID111AAAAA', title: { simpleText: 'First dup' } } },
+    { playlistVideoRenderer: { videoId: 'VID444DDDDD', title: { simpleText: 'Fourth' }, longBylineText: { runs: [{ text: 'Chan Four', navigationEndpoint: { browseEndpoint: { browseId: UC_C, canonicalBaseUrl: '/@chanfour' } } }] } } },
+  ] } }],
+};
+const r2 = lib.collectPlaylistData(page2);
+ok(r2.items.length, 2, 'continuation items collected (dup counted here, fetch loop dedupes)');
+ok(r2.items[1].channelName, 'Chan Four', 'longBylineText fallback');
+ok(r2.continuation, null, 'no continuation on last page');
+ok(lib.collectPlaylistData({}).items.length, 0, 'empty response safe');
+ok(lib.collectPlaylistData(null).continuation, null, 'null response safe');
+
 // --- manifest wiring ---
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
 ok(manifest.manifest_version, 3, 'mv3');
@@ -131,6 +179,10 @@ assert.ok(contentSrc.includes('ytd-playlist-sidebar-renderer'), 'toolbar knows s
 assert.ok(contentSrc.includes('findPlayAllRow'), 'toolbar anchors to visible Play-all row');
 assert.ok(!contentSrc.includes("addEventListener('click', (e) => e.stopPropagation(), true)"), 'no capture click blocker killing buttons');
 assert.ok(contentSrc.includes('toolbar build failed'), 'toolbar build errors are logged, not silent');
+assert.ok(contentSrc.includes('function pickRandom'), 'v2 random pick present');
+assert.ok(contentSrc.includes('function fetchFullPlaylist'), 'v2 data fetch present');
+assert.ok(!contentSrc.includes('function shuffleRows'), 'v1 DOM shuffle removed');
+assert.ok(!contentSrc.includes('function loadAllVideos'), 'v1 auto-scroll load-all removed');
 assert.ok(!contentSrc.includes('function channelKey('), 'no duplicated channelKey in content');
 const bgSrc = fs.readFileSync(bgPath, 'utf8');
 assert.ok(bgSrc.includes('WLAVF_OPEN_CLEAN'), 'background handles clean-open message');

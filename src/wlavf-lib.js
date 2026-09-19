@@ -219,6 +219,137 @@
     return items;
   }
 
+  /* ---- v2 data mode: InnerTube helpers (pure, no DOM) ----
+   * The WL page virtualizes its list (~100 row nodes for 4000+ videos, nodes
+   * recycled in place), so DOM scraping can never cover a big playlist.
+   * Instead we read the page's own embedded InnerTube key/context and fetch
+   * the full playlist data (videoId + channel per item, all continuations).
+   * No user API key involved — same key the YouTube page itself uses. */
+
+  /** Balanced-brace scan from str[startIdx] (must be '{'). Returns substring or null. */
+  function scanBalancedJson(str, startIdx) {
+    const s = String(str || '');
+    if (s[startIdx] !== '{') return null;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = startIdx; i < s.length; i++) {
+      const c = s[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+      } else if (c === '"') {
+        inStr = true;
+      } else if (c === '{') {
+        depth++;
+      } else if (c === '}') {
+        depth--;
+        if (depth === 0) return s.slice(startIdx, i + 1);
+      }
+    }
+    return null;
+  }
+
+  /** Extract {apiKey, context, clientVersion} from page HTML. Missing parts are null. */
+  function parseInnertubeConfig(html) {
+    const s = String(html || '');
+    let apiKey = null;
+    let context = null;
+    let clientVersion = null;
+    const km = s.match(/"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"/);
+    if (km) apiKey = km[1];
+    const cm = s.match(/"INNERTUBE_CONTEXT"\s*:\s*\{/);
+    if (cm) {
+      const braceIdx = cm[0].lastIndexOf('{') + cm.index;
+      const raw = scanBalancedJson(s, braceIdx);
+      if (raw) {
+        try {
+          context = JSON.parse(raw);
+        } catch (_e) {
+          context = null;
+        }
+      }
+    }
+    if (context && context.client && typeof context.client.clientVersion === 'string') {
+      clientVersion = context.client.clientVersion;
+    } else {
+      const vm = s.match(/"clientVersion"\s*:\s*"([^"]+)"/);
+      if (vm) clientVersion = vm[1];
+    }
+    return { apiKey, context, clientVersion };
+  }
+
+  function runsText(t) {
+    if (!t || typeof t !== 'object') return '';
+    if (typeof t.simpleText === 'string') return t.simpleText;
+    if (Array.isArray(t.runs)) return t.runs.map((r) => (r && r.text) || '').join('');
+    return '';
+  }
+
+  /** One playlistVideoRenderer -> flat item. Unknowns stay empty (fail-open later). */
+  function parsePlaylistVideo(pvr) {
+    const p = (pvr && typeof pvr === 'object') ? pvr : {};
+    const videoId = typeof p.videoId === 'string' ? p.videoId : null;
+    const title = runsText(p.title) || runsText(p.headline) || '';
+    const run =
+      (p.shortBylineText && Array.isArray(p.shortBylineText.runs) && p.shortBylineText.runs[0]) ||
+      (p.longBylineText && Array.isArray(p.longBylineText.runs) && p.longBylineText.runs[0]) ||
+      null;
+    let channelName = '';
+    let channelId = null;
+    let channelHandle = null;
+    if (run) {
+      channelName = run.text || '';
+      const be = run.navigationEndpoint && run.navigationEndpoint.browseEndpoint;
+      if (be && typeof be === 'object') {
+        if (typeof be.browseId === 'string' && /^UC[A-Za-z0-9_-]{22}$/.test(be.browseId)) channelId = be.browseId;
+        const canon = typeof be.canonicalBaseUrl === 'string' ? be.canonicalBaseUrl : '';
+        const hm = canon.match(/@([A-Za-z0-9._-]+)/);
+        if (hm) channelHandle = '@' + hm[1].toLowerCase();
+      }
+    }
+    return { videoId, title, channelName, channelId, channelHandle };
+  }
+
+  /**
+   * Recursively collect {items, continuation} from any browse/continuation
+   * response shape. Defensive: probes structure by key names, not paths.
+   */
+  function collectPlaylistData(root) {
+    const items = [];
+    const seenIds = new Set();
+    const contTokens = [];
+    (function walk(node) {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        node.forEach(walk);
+        return;
+      }
+      if (node.playlistVideoRenderer && typeof node.playlistVideoRenderer === 'object') {
+        const it = parsePlaylistVideo(node.playlistVideoRenderer);
+        if (it.videoId && !seenIds.has(it.videoId)) {
+          seenIds.add(it.videoId);
+          items.push(it);
+        }
+      }
+      const cir = node.continuationItemRenderer;
+      if (cir && cir.continuationEndpoint && cir.continuationEndpoint.continuationCommand) {
+        const t = cir.continuationEndpoint.continuationCommand.token;
+        if (typeof t === 'string' && t) contTokens.push(t);
+      }
+      if (node.nextContinuationData && typeof node.nextContinuationData.continuation === 'string') {
+        contTokens.push(node.nextContinuationData.continuation);
+      }
+      const keys = Object.keys(node);
+      for (let i = 0; i < keys.length; i++) {
+        if (keys[i] === 'playlistVideoRenderer') continue;
+        walk(node[keys[i]]);
+      }
+    })(root);
+    return { items, continuation: contTokens.length ? contTokens[contTokens.length - 1] : null };
+  }
+
   const lib = {
     YT_ORIGIN,
     isWlUrl,
@@ -235,6 +366,10 @@
     decideRow,
     parseImportText,
     extractSubsFromHtml,
+    scanBalancedJson,
+    parseInnertubeConfig,
+    collectPlaylistData,
+    parsePlaylistVideo,
   };
 
   if (typeof globalThis !== 'undefined') globalThis.__WLAVF_LIB = lib;

@@ -2,6 +2,19 @@
 
 > **AI-generated code warning**: this extension was written by an AI coding assistant, not a human developer. It works as described and is covered by automated tests (`node test/run-tests.cjs`) plus a manual checklist below — but review the code yourself before trusting it, especially the click-interception and filtering logic. Use at your own risk.
 
+> **Branch `v2-innertube` (this branch)**: re-architecture for big playlists (1000+ videos). `main` keeps the v1 DOM-scraping version.
+
+## Why v2: the DOM is virtualized
+
+YouTube renders only ~100 row nodes no matter how big Watch Later is, and scrolling *recycles* those nodes for different videos (links/text change in place). So v1's approach — hide DOM rows, reshuffle DOM order, auto-scroll to load everything — fundamentally breaks at 4k videos: hidden videos resurface, shuffle order evaporates on scroll.
+
+v2 instead fetches the **full playlist data** (videoId + channel per video) through YouTube's own `youtubei/v1/browse` API, using the page's embedded key/context — **no user API key**, same key the page itself uses. Filtering then keys on stable videoIds and survives recycling; a re-apply over ~100 rows is milliseconds.
+
+Consequences, stated plainly:
+- **Shuffle (visual reorder) is gone**, replaced by **Random pick**: DOM order cannot survive node recycling, so any displayed shuffle would be a lie on big lists. Random opens one video from the current pool (subs-filtered when Subs-only is on) in a new tab.
+- **Load-all scrolling is gone**, replaced by **Fetch list** (~40 fast data requests for 4k videos, with progress + Cancel, instead of minutes of scrolling).
+- If the data key can't be read (logged out, consent page) or the fetch fails, v2 falls back to the v1 loaded-rows filter automatically.
+
 Niche Chrome extension (Manifest V3) for your own use. No Web Store, no OAuth, no API license.
 
 ## What it does (only on `youtube.com/playlist?list=WL`)

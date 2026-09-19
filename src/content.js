@@ -34,6 +34,12 @@
     collabCache: {},
     verifying: false,
     verifyAbort: false,
+    // v2 data mode: full playlist items keyed by videoId (DOM is virtualized).
+    dataItems: [],
+    dataById: {},
+    dataMode: false,
+    dataLoading: false,
+    dataAbort: false,
     lastUrl: location.href,
     rowObserver: null,
   };
@@ -260,9 +266,9 @@
     ui.counts();
   }
 
-  /* ---------- filter / shuffle / load-all ---------- */
+  /* ---------- legacy loaded-rows filter (fallback when data mode unavailable) ---------- */
 
-  function applySubsFilter(ui) {
+  function applySubsFilterLegacy(ui) {
     const infos = getVideoRows().map(parseRow);
     let shown = 0, hidden = 0, unknown = 0;
     const unmatched = new Set();
@@ -315,43 +321,218 @@
     return { infos, unmatched };
   }
 
-  function shuffleRows(ui) {
-    const rows = getVideoRows();
-    if (rows.length < 2) { ui.status('Nothing to shuffle yet — videos are still loading.'); return; }
-    const parent = rows[0].parentElement;
-    if (!parent) return;
-    const arr = rows.slice();
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [arr[i], arr[j]] = [arr[j], arr[i]];
+  /* ---------- v2 data mode: full playlist via the page's own InnerTube ----------
+   * The WL DOM is virtualized (~100 recycled row nodes for 4000+ videos), so
+   * DOM scraping can never cover a big playlist. Instead we fetch the playlist
+   * data (videoId + channel per item) through youtubei/v1/browse using the
+   * page's embedded key/context — no user API key — then hide rows by stable
+   * videoId, which survives node recycling. */
+
+  let itConfig = null;
+
+  function getInnertubeConfig() {
+    if (itConfig) return itConfig;
+    try {
+      itConfig = LIB.parseInnertubeConfig(document.documentElement.innerHTML);
+    } catch (_e) {
+      itConfig = { apiKey: null, context: null, clientVersion: null };
     }
-    const frag = document.createDocumentFragment();
-    arr.forEach((r) => frag.appendChild(r));
-    parent.appendChild(frag);
-    ui.status('Shuffled ' + arr.length + ' loaded videos (random order). Press again to reshuffle. Tip: “Load all” first for full-playlist shuffle.');
+    return itConfig;
   }
 
-  async function loadAllVideos(ui) {
-    if (ui.loading) return;
-    state.loadAllAbort = false;
-    ui.setLoading(true);
-    let last = -1, stable = 0, iters = 0;
-    ui.status('Loading full playlist… 0 (auto-scroll, Cancel available)');
-    while (!state.loadAllAbort && iters++ < 150 && stable < 6) {
-      window.scrollTo(0, document.body.scrollHeight);
-      const list = $('ytd-playlist-video-list-renderer #contents') || $('ytd-playlist-video-list-renderer');
-      if (list) list.scrollTop = list.scrollHeight;
-      await new Promise((r) => setTimeout(r, 900));
-      const n = getVideoRows().length;
-      if (n > last) { last = n; stable = 0; ui.status('Loading full playlist… ' + n + ' (auto-scroll, Cancel available)'); }
-      else stable++;
+  function browseContext() {
+    const cfg = getInnertubeConfig();
+    if (cfg.context) return cfg.context;
+    return { client: { clientName: 'WEB', clientVersion: cfg.clientVersion || '2.20260101.00.00', hl: 'en', gl: 'US' } };
+  }
+
+  async function innertubeBrowse(body) {
+    const cfg = getInnertubeConfig();
+    const res = await fetch('https://www.youtube.com/youtubei/v1/browse?key=' + encodeURIComponent(cfg.apiKey) + '&prettyPrint=false', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error('YouTube data request failed (HTTP ' + res.status + ')');
+    return res.json();
+  }
+
+  function itemKey(item) {
+    if (item.channelId) return 'id:' + item.channelId;
+    if (item.channelHandle) return 'handle:' + item.channelHandle;
+    return null;
+  }
+
+  /** Hidden videoIds from data + subs. Unknowns stay visible (fail-open). */
+  function rebuildHiddenSet() {
+    const hidden = new Set();
+    const unmatched = new Set();
+    state.dataItems.forEach((it) => {
+      if (!it.videoId) return;
+      if (LIB.isSubscribed(itemKey(it), it.channelName, state.subsMap)) return;
+      if (!itemKey(it) && LIB.nameAliases(it.channelName).length === 0) return;
+      hidden.add(it.videoId);
+      if (unmatched.size < 500) unmatched.add(it.channelName || itemKey(it) || it.videoId);
+    });
+    return { hidden, unmatched };
+  }
+
+  let hiddenIds = new Set();
+
+  async function fetchFullPlaylist(ui) {
+    if (state.dataLoading) return false;
+    const cfg = getInnertubeConfig();
+    if (!cfg.apiKey) {
+      ui.status('Could not read the page data key (logged out or consent page?). Using loaded-rows mode.');
+      log('no innertube key, legacy mode');
+      applySubsFilterLegacy(ui);
+      return false;
     }
-    window.scrollTo(0, 0);
-    ui.setLoading(false);
-    const n = getVideoRows().length;
-    ui.status(state.loadAllAbort ? 'Load-all cancelled at ' + n + ' videos.' : 'Loaded ' + n + ' videos. Now filter/shuffle applies to all of them.');
-    if (state.subsOnly) applySubsFilter(ui);
-    else ui.counts(n, n, 0);
+    state.dataLoading = true;
+    state.dataAbort = false;
+    ui.setLoading(true);
+    try {
+      const items = [];
+      const seen = new Set();
+      let token = null;
+      let first = true;
+      let pages = 0;
+      while (!state.dataAbort) {
+        const body = first
+          ? { context: browseContext(), browseId: 'VLWL' }
+          : { context: browseContext(), continuation: token };
+        first = false;
+        const r = LIB.collectPlaylistData(await innertubeBrowse(body));
+        r.items.forEach((it) => {
+          if (it.videoId && !seen.has(it.videoId)) { seen.add(it.videoId); items.push(it); }
+        });
+        pages++;
+        token = r.continuation;
+        ui.status('Fetching playlist data... ' + items.length + ' videos (' + pages + ' pages, Cancel available)');
+        if (!token) break;
+        if (pages > 200 || items.length > 20000) { log('fetch cap hit'); break; }
+        await new Promise((res) => setTimeout(res, 150));
+      }
+      if (state.dataAbort) {
+        ui.status('Fetch cancelled at ' + items.length + ' videos.');
+        return false;
+      }
+      state.dataItems = items;
+      state.dataById = {};
+      items.forEach((it) => { state.dataById[it.videoId] = it; });
+      state.dataMode = items.length > 0;
+      log('fetched', items.length, 'items in', pages, 'pages');
+      const r2 = rebuildHiddenSet();
+      hiddenIds = r2.hidden;
+      ui.unmatched(r2.unmatched);
+      applyVideoFilter(ui);
+      return state.dataMode;
+    } catch (err) {
+      ui.status('Fetch failed: ' + (err && err.message ? err.message : err) + ' - using loaded-rows mode.');
+      log('fetch failed:', err && err.message);
+      applySubsFilterLegacy(ui);
+      return false;
+    } finally {
+      state.dataLoading = false;
+      ui.setLoading(false);
+    }
+  }
+
+  function rowVideoId(row) {
+    const a = row.querySelector('a[href*="watch?v="]');
+    return a ? LIB.videoIdFromHref(a.getAttribute('href')) : null;
+  }
+
+  /** Hide/show rendered rows by stable videoId. Cheap: O(visible rows). */
+  function applyVideoFilter(ui) {
+    const rows = getVideoRows();
+    let shown = 0, hidden = 0;
+    if (!state.subsOnly) {
+      rows.forEach((row) => { row.style.display = ''; row.removeAttribute('data-' + P + 'hidden'); });
+      const total = state.dataItems.length || rows.length;
+      ui.counts(total, total, 0);
+      return;
+    }
+    if (!subsCount()) {
+      rows.forEach((row) => { row.style.display = ''; });
+      ui.status('Subs-only is ON but no subscription cache. Press "Scan subs" or Import a list first.');
+      ui.counts(state.dataItems.length || rows.length, rows.length, 0);
+      return;
+    }
+    rows.forEach((row) => {
+      const vid = rowVideoId(row);
+      if (vid && hiddenIds.has(vid)) {
+        row.style.display = 'none';
+        row.setAttribute('data-' + P + 'hidden', 'unsub');
+        hidden++;
+      } else if (state.deepCollab && row.getAttribute('data-' + P + 'hidden') === 'collab') {
+        hidden++; // preserve manual collab hides
+      } else {
+        row.style.display = '';
+        if (row.getAttribute('data-' + P + 'hidden') !== 'collab') row.removeAttribute('data-' + P + 'hidden');
+        shown++;
+      }
+    });
+    const total = state.dataItems.length || rows.length;
+    ui.counts(total, total - hiddenIds.size, hiddenIds.size);
+    ui.status('Subs-only (full playlist): ' + (total - hiddenIds.size) + ' shown / ' + hiddenIds.size + ' hidden of ' + total + '. Rendered rows: ' + rows.length + '.');
+  }
+
+  function reapplyFilter(ui) {
+    if (!state.subsOnly) return;
+    if (state.dataMode) applyVideoFilter(ui);
+    else applySubsFilterLegacy(ui);
+  }
+
+  async function ensureDataForFilter(ui) {
+    if (!state.subsOnly) {
+      getVideoRows().forEach((row) => { row.style.display = ''; row.removeAttribute('data-' + P + 'hidden'); });
+      const total = state.dataMode && state.dataItems.length ? state.dataItems.length : getVideoRows().length;
+      ui.counts(total, total, 0);
+      ui.status('Filter off - showing all.');
+      return;
+    }
+    if (!subsCount()) {
+      getVideoRows().forEach((row) => { row.style.display = ''; });
+      ui.status('Subs-only is ON but no subscription cache. Press "Scan subs" or Import a list first.');
+      return;
+    }
+    if (state.dataMode) {
+      const r = rebuildHiddenSet();
+      hiddenIds = r.hidden;
+      ui.unmatched(r.unmatched);
+      applyVideoFilter(ui);
+      return;
+    }
+    await fetchFullPlaylist(ui);
+  }
+
+  function openCleanUrl(url) {
+    const fallback = () => window.open(url, '_blank', 'noopener,noreferrer');
+    try {
+      chrome.runtime.sendMessage({ type: MSG_OPEN, url }, (resp) => {
+        if (chrome.runtime.lastError || !resp || !resp.ok) fallback();
+      });
+    } catch (_err) {
+      fallback();
+    }
+  }
+
+  /** Random pick from the current pool - honest replacement for visual shuffle
+   *  on virtualized multi-thousand-video lists (DOM order cannot survive recycling). */
+  async function pickRandom(ui) {
+    if (!state.dataMode) {
+      ui.status('Fetching playlist data first...');
+      const ok = await fetchFullPlaylist(ui);
+      if (!ok) return;
+    }
+    let pool = state.dataItems.filter((it) => it.videoId);
+    if (state.subsOnly) pool = pool.filter((it) => !hiddenIds.has(it.videoId));
+    if (!pool.length) { ui.status('Nothing to pick from.'); return; }
+    const pick = pool[Math.floor(Math.random() * pool.length)];
+    ui.status('Random pick (' + pool.length + ' to choose from): ' + (pick.title || pick.videoId) + ' - opening in a new tab.');
+    openCleanUrl(LIB.cleanWatchUrl(pick.videoId, ''));
   }
 
   /* ---------- toolbar (Shadow DOM) ---------- */
@@ -483,8 +664,8 @@
           <label class="${P}chk"><input type="checkbox" id="${P}subsOnly"> Subs-only</label>
           <label class="${P}chk"><input type="checkbox" id="${P}cleanOpen" checked> Open clean in new tab</label>
           <label class="${P}chk"><input type="checkbox" id="${P}deepCollab"> Collab check (slow)</label>
-          <button class="${P}btn ${P}btn-primary" id="${P}shuffle">Shuffle</button>
-          <button class="${P}btn" id="${P}loadAll">Load all</button>
+          <button class="${P}btn ${P}btn-primary" id="${P}random">Random</button>
+          <button class="${P}btn" id="${P}fetch">Fetch list</button>
           <button class="${P}btn" id="${P}cancel" disabled>Cancel</button>
         </div>
         <div class="${P}row" style="margin-top:8px">
@@ -527,7 +708,7 @@
       setLoading: (v) => {
         ui.loading = v;
         q('cancel').disabled = !(v || state.verifying);
-        q('loadAll').disabled = v;
+        q('fetch').disabled = v;
       },
     };
 
@@ -543,17 +724,17 @@
     q('subsOnly').addEventListener('change', async (e) => {
       state.subsOnly = e.target.checked;
       await saveToggles();
-      applySubsFilter(ui);
+      ensureDataForFilter(ui);
     });
     q('cleanOpen').addEventListener('change', async (e) => { state.cleanOpen = e.target.checked; await saveToggles(); ui.status(state.cleanOpen ? 'Clean-open ON: WL clicks open plain watch URLs in a new tab (kept in WL).' : 'Clean-open OFF: YouTube default click behavior.'); });
-    q('deepCollab').addEventListener('change', async (e) => { state.deepCollab = e.target.checked; await saveToggles(); applySubsFilter(ui); });
+    q('deepCollab').addEventListener('change', async (e) => { state.deepCollab = e.target.checked; await saveToggles(); reapplyFilter(ui); });
 
-    on('shuffle', () => shuffleRows(ui));
-    on('loadAll', () => loadAllVideos(ui));
-    on('cancel', () => { state.loadAllAbort = true; state.verifyAbort = true; ui.setLoading(false); q('cancel').disabled = true; });
+    on('random', () => pickRandom(ui));
+    on('fetch', () => fetchFullPlaylist(ui));
+    on('cancel', () => { state.dataAbort = true; state.verifyAbort = true; ui.setLoading(false); q('cancel').disabled = true; });
     on('reset', async () => {
       state.subsOnly = false; q('subsOnly').checked = false; await saveToggles();
-      applySubsFilter(ui);
+      ensureDataForFilter(ui);
     });
     on('scan', async () => {
       try {
@@ -561,7 +742,7 @@
         const count = await scanSubscriptions(ui.status);
         ui.status('Subs cache saved: ' + count + ' channels. Now toggle “Subs-only” to filter.');
         ui.counts();
-        if (state.subsOnly) applySubsFilter(ui);
+        if (state.subsOnly) ensureDataForFilter(ui);
       } catch (err) { ui.status('Scan failed: ' + (err && err.message ? err.message : err)); }
       finally { q('scan').disabled = false; }
     });
@@ -578,7 +759,7 @@
         await saveSubs();
         ui.status('Imported ' + LIB.canonicalCount(map) + ' channels from ' + f.name + '.');
         ui.counts();
-        if (state.subsOnly) applySubsFilter(ui);
+        if (state.subsOnly) ensureDataForFilter(ui);
       } catch (err) { ui.status('Import failed: ' + (err && err.message ? err.message : err)); }
       e.target.value = '';
     });
@@ -595,16 +776,18 @@
     if (state.rowObserver) state.rowObserver.disconnect();
     const list = $('ytd-playlist-video-list-renderer #contents');
     if (list) {
+      // Node recycling changes hrefs in place — watch attributes too.
       state.rowObserver = new MutationObserver(debounce(() => {
-        if (!isWlPage() || !state.subsOnly) { ui.counts(); return; }
-        applySubsFilter(ui);
-      }, 600));
-      state.rowObserver.observe(list, { childList: true });
+        if (!isWlPage()) return;
+        if (!state.subsOnly) { ui.counts(); return; }
+        reapplyFilter(ui);
+      }, 400));
+      state.rowObserver.observe(list, { childList: true, subtree: true, attributes: true, attributeFilter: ['href'] });
     }
 
     ui.counts();
     if (!subsCount()) ui.status('Ready. Step 1: “Scan subs” (one-time read of /feed/channels) or “Import list”. Step 2: toggle “Subs-only”.');
-    else if (state.subsOnly) applySubsFilter(ui);
+    else if (state.subsOnly) ensureDataForFilter(ui);
     log('toolbar injected, rows found:', getVideoRows().length);
     return ui;
     } catch (err) {
@@ -650,17 +833,7 @@
     if (!vid) return;
     e.preventDefault();
     e.stopPropagation();
-    const url = LIB.cleanWatchUrl(vid, href);
-    // Single send, callback form (works on all Chrome versions — no double-send).
-    try {
-      chrome.runtime.sendMessage({ type: MSG_OPEN, url }, (resp) => {
-        if (chrome.runtime.lastError || !resp || !resp.ok) {
-          window.open(url, '_blank', 'noopener,noreferrer');
-        }
-      });
-    } catch (_err) {
-      window.open(url, '_blank', 'noopener,noreferrer');
-    }
+    openCleanUrl(LIB.cleanWatchUrl(vid, href));
   }
 
   /* ---------- boot / SPA navigation ---------- */
