@@ -395,22 +395,31 @@
     try {
       const items = [];
       const seen = new Set();
+      const usedTokens = new Set();
       let token = null;
       let first = true;
       let pages = 0;
+      let stalePages = 0;
       while (!state.dataAbort) {
         const body = first
           ? { context: browseContext(), browseId: 'VLWL' }
           : { context: browseContext(), continuation: token };
         first = false;
-        const r = LIB.collectPlaylistData(await innertubeBrowse(body));
+        const json = await innertubeBrowse(body);
+        const r = LIB.collectPlaylistData(json);
+        let fresh = 0;
         r.items.forEach((it) => {
-          if (it.videoId && !seen.has(it.videoId)) { seen.add(it.videoId); items.push(it); }
+          if (it.videoId && !seen.has(it.videoId)) { seen.add(it.videoId); items.push(it); fresh++; }
         });
         pages++;
+        stalePages = fresh === 0 ? stalePages + 1 : 0;
         token = r.continuation;
+        if (pages <= 2) log('page', pages, 'keys:', Object.keys(json || {}).join(','), 'fresh:', fresh, 'token:', token ? 'yes' : 'no');
         ui.status('Fetching playlist data... ' + items.length + ' videos (' + pages + ' pages, Cancel available)');
-        if (!token) break;
+        if (!token) { log('no continuation, done'); break; }
+        if (usedTokens.has(token)) { log('repeated token, stopping'); break; }
+        usedTokens.add(token);
+        if (stalePages >= 2) { log('no new items twice, stopping'); break; }
         if (pages > 200 || items.length > 20000) { log('fetch cap hit'); break; }
         await new Promise((res) => setTimeout(res, 150));
       }

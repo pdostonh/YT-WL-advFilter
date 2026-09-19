@@ -159,6 +159,22 @@ ok(r2.items[1].channelName, 'Chan Four', 'longBylineText fallback');
 ok(r2.continuation, null, 'no continuation on last page');
 ok(lib.collectPlaylistData({}).items.length, 0, 'empty response safe');
 ok(lib.collectPlaylistData(null).continuation, null, 'null response safe');
+// Alternate token shapes (real responses vary by layout/endpoint)
+const altShape = {
+  continuationContents: { playlistVideoListContinuation: {
+    contents: [{ playlistVideoRenderer: { videoId: 'VID555EEEEE', title: { simpleText: 'Fifth' } } }],
+    continuations: [{ nextContinuationData: { continuation: 'TOKEN_ALT' } }],
+  } },
+};
+const rAlt = lib.collectPlaylistData(altShape);
+ok(rAlt.items.length, 1, 'continuationContents shape collected');
+ok(rAlt.continuation, 'TOKEN_ALT', 'nextContinuationData token found');
+const genericShape = { someWrapper: { continuationEndpoint: { continuationCommand: { token: 'TOKEN_GENERIC_1234567890' } } } };
+ok(lib.collectPlaylistData(genericShape).continuation, 'TOKEN_GENERIC_1234567890', 'generic continuationCommand.token found');
+const bareShape = { playlistVideoListContinuation: { continuation: 'TOKEN_BARE_123456789012345678901234' } };
+ok(lib.collectPlaylistData(bareShape).continuation, 'TOKEN_BARE_123456789012345678901234', 'bare continuation string found');
+const shortShape = { continuation: 'abc' };
+ok(lib.collectPlaylistData(shortShape).continuation, null, 'short non-token continuation ignored');
 
 // --- manifest wiring ---
 const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));

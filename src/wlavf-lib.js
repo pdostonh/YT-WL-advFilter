@@ -341,6 +341,13 @@
       if (node.nextContinuationData && typeof node.nextContinuationData.continuation === 'string') {
         contTokens.push(node.nextContinuationData.continuation);
       }
+      // Generic probes: token shapes vary across response kinds/layouts.
+      if (node.continuationCommand && typeof node.continuationCommand.token === 'string' && node.continuationCommand.token) {
+        contTokens.push(node.continuationCommand.token);
+      }
+      if (typeof node.continuation === 'string' && node.continuation.length >= 32) {
+        contTokens.push(node.continuation);
+      }
       const keys = Object.keys(node);
       for (let i = 0; i < keys.length; i++) {
         if (keys[i] === 'playlistVideoRenderer') continue;
