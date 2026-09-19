@@ -31,6 +31,19 @@ Niche Chrome extension (Manifest V3) for your own use. No Web Store, no OAuth, n
 - `src/popup.html` — pointer to the WL page (controls stay on WL per your choice).
 - `test/run-tests.cjs` — `node test/run-tests.cjs` (49 assertions: parsing, matching incl. alias fallback, import formats, scan-HTML extraction, manifest wiring).
 
+## Security & privacy
+
+- **Manifest V3**, default content security policy. No remote code, no `eval`, no third-party requests.
+- **Permissions and why**: `storage` (local subs + settings cache), `windows` (open the clean watch URL in a new window), host access to `*.youtube.com` only (read the WL page, one-time `/feed/channels` scan, optional watch-page fetch for collab check). No `<all_urls>`, `tabs`, `cookies`, or `identity`.
+- **Nothing leaves your machine**: subscriptions are cached in `chrome.storage.local`; export writes local files. No analytics, no API keys, no accounts.
+- **Narrow runtime scope**: the content script loads only on `/playlist*` pages and activates only when `list=WL` (youtube.com hosts). It never touches watch pages, never calls playlist-delete APIs, and intercepts only plain left-clicks on WL rows (Ctrl/Cmd/Shift/middle-click untouched).
+- **Input safety**: the toolbar is a static template in Shadow DOM; all YouTube-derived strings go through `textContent`, never `innerHTML`. The background worker allowlists URLs (`youtube.com/watch` + video id) before opening them.
+- **Install warning is expected**: Chrome shows "read and change your data on youtube.com" — that is exactly what filtering the WL page requires. This extension is side-loaded for private use, not from the Web Store.
+
+## Updating
+
+`git pull`, then `chrome://extensions` → reload the extension (or remove + Load unpacked again).
+
 ## Manual check after install
 
 1. WL page shows toolbar; counts line reads `Loaded/Shown/Hidden/Subs cached`.
