@@ -1,5 +1,7 @@
 # Watch Later Adv Filter (private, no API key)
 
+> **AI-generated code warning**: this extension was written by an AI coding assistant, not a human developer. It works as described and is covered by automated tests (`node test/run-tests.cjs`) plus a manual checklist below — but review the code yourself before trusting it, especially the click-interception and filtering logic. Use at your own risk.
+
 Niche Chrome extension (Manifest V3) for your own use. No Web Store, no OAuth, no API license.
 
 ## What it does (only on `youtube.com/playlist?list=WL`)
