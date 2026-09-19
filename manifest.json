@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Watch Later Adv Filter (private)",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Private niche helper for Watch Later: subs-only filter, random shuffle, open-clean-in-new-tab. No API keys. Content-script only on WL page.",
   "permissions": ["storage"],
   "host_permissions": ["*://*.youtube.com/*"],

@@ -531,7 +531,10 @@
       },
     };
 
-    shadow.addEventListener('click', (e) => e.stopPropagation(), true);
+    // NOTE: no capture-phase click blocker here — one would stop our own
+    // buttons' handlers (capture runs before the target). YouTube is shielded
+    // instead by per-button stopPropagation below, and onDocClickCapture
+    // already ignores anything inside #wlavf-host.
     const on = (id, fn) => q(id).addEventListener('click', (e) => { e.stopPropagation(); fn(e); });
 
     q('subsOnly').checked = state.subsOnly;
